@@ -1,0 +1,1555 @@
+######################## FUNCTION START     ########################
+##FUNCTION: Log START ################################
+
+scriptName="HMEAGREEMENTS"
+app="API"
+launchPoint="API"
+user="tlouro"
+def Log(tmpLevel, tmpMessage):
+    try:
+        # Change the name to the log file you want to write to
+        tmpLog = MXLoggerFactory.getLogger("maximo.script.Autoscript");
+        if tmpLevel.upper() == 'DEBUG':
+            if not tmpLog.isDebugEnabled(): return
+        # Build Log Message
+        tmpApp = app
+        if app is None:
+            tmpApp = mboname
+        if tmpApp is None:
+            tmpApp='null'
+            tmpMBOPrefix = ' '
+        elif tmpApp in ('INCIDENT', 'SR', 'PROBLEM'):
+            tmpMBOPrefix = '[' + mbo.getString('TICKETID') + '] '           
+
+        elif tmpApp in ('ACTIVITY', 'WOACTIVITY'):
+            tmpMBOKey = mbo.getString('WONUM')
+            tmpParent = mbo.getString('PARENT')
+            tmpOrig = mbo.getString('ORIGRECORDID')
+            if tmpParent <> '':
+                tmpMBOKey = tmpMBOKey + ' PARENT ' + tmpParent
+            else:
+                tmpMBOKey = tmpMBOKey + ' PARENT ' + tmpOrig
+               
+            tmpMBOPrefix = '[' + tmpMBOKey + '] '
+           
+        elif tmpApp in ('WORKORDER', 'CHANGE'):
+            tmpMBOKey = mbo.getString('WONUM')
+            tmpParent = mbo.getString('PARENT')
+            if tmpParent <> '':
+                tmpMBOKey = tmpMBOKey + ' PARENT ' + tmpParent
+
+            tmpMBOPrefix = '[' + tmpMBOKey + '] '           
+        else:
+            tmpMBOPrefix = ' '
+           
+        tmpLaunchPoint = launchPoint
+        if tmpLaunchPoint is None: tmpLaunchPoint='null'
+
+        tmpLogMessage = '[' + scriptName + '.' + tmpLaunchPoint + '.' + tmpApp  + '.' + user + '] ' + tmpMBOPrefix + tmpMessage
+        # Log message at requested level
+        if tmpLevel == 'INFO' : tmpLog.info(tmpLogMessage)
+        elif tmpLevel == 'DEBUG' : tmpLog.debug(tmpLogMessage)
+        elif tmpLevel == 'ERROR' : tmpLog.error(tmpLogMessage)
+        elif tmpLevel == 'FATAL' : tmpLog.fatal(tmpLogMessage)
+        elif tmpLevel == 'WARN' : tmpLog.warn(tmpLogMessage)
+        else: tmpLog.info(tmpLogMessage)
+    except:
+        print '[' + scriptName + '} Error in function Log() - ' + str(sys.exc_info()[1])
+        MXLoggerFactory.getLogger('maximo.script.' + scriptName).error('[' + scriptName + '} Error in function Log() - ' + str(sys.exc_info()[1]))
+
+##FUNCTION: Log END ##################################
+
+########################   FUNCTION END        ########################
+######################## MAIN SCRIPT START     ########################
+
+Log("INFO", "HMEAGREEMENTS: ######################## START ########################")
+
+def clearAndCloseMboSet(paramMboSetRemote):
+    if paramMboSetRemote is not None:
+        paramMboSetRemote.clear();
+        paramMboSetRemote.close(); 
+
+def sendMessage(mbo,commtemplate):
+    Log("INFO","OSIN.HMEAGREEMENTS.sendMessage: Start")
+    ctMboSet = mbo.getMboSet("$commtemp","COMMTEMPLATE","TEMPLATEID='"+commtemplate+"' and OBJECTNAME='"+mbo.getName()+"'");
+    ctMboSet.setQbeExactMatch("true")
+    ctMboSet.reset()
+    ctMbo = ctMboSet.getMbo(0)
+    try:
+        if ctMbo.getString("STATUS")=="ACTIVE":
+            ctMbo.sendMessage(mbo,mbo);
+    except:
+        msg=[str(sys.exc_info()[1])]
+        Log("INFO","OSIN.HMEAGREEMENTS.sendMessage: Exception: "+ str(msg))
+    Log("INFO","OSIN.HMEAGREEMENTS.sendMessage: End")
+
+def isRefundable(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.isRefundable: Start")    
+    flag = False;
+    type=getType(pluspBillSchedule);
+    format = SimpleDateFormat("EEE MMM dd hh:mm:ss z yyyy");
+    serverDate = format.parse(str(MXServer.getMXServer().getDate()));
+    calendar = Calendar.getInstance();
+    calendar.setTime(serverDate);
+    calendar.set(Calendar.SECOND, 0);
+    calendar.set(Calendar.MINUTE, 0);
+    calendar.set(Calendar.HOUR_OF_DAY, 0);    
+    todayDate=calendar.getTime();    
+    graceDate = pluspBillSchedule.getDate("HMEGRACEENDDATE");
+    status=pluspBillSchedule.getString("HMEBILLSTATUS")
+    Log("INFO","OSIN.HMEAGREEMENTS.isRefundable: todayDate : "+str(todayDate))
+    Log("INFO","OSIN.HMEAGREEMENTS.isRefundable: graceDate : "+str(graceDate))
+    if (type=="T" and todayDate >= pluspBillSchedule.getDate("FIRSTBILLDATE") and todayDate <= graceDate) and status in ["PROVPENDING","DAQPENDING","ACTIVE","PENDING"]:
+        flag=True;
+    
+    if (type =="P" and todayDate <= graceDate and status in ["PROVPENDING","DAQPENDING","ACTIVE","PENDING"]):
+        flag=True;        
+    Log("INFO","OSIN.HMEAGREEMENTS.isRefundable: isRefundable : "+str(flag)) 
+    Log("INFO","OSIN.HMEAGREEMENTS.isRefundable: End")     
+    return flag
+    
+def turnONPackage(asset,item):
+    Log("INFO","OSIN.HMEAGREEMENTS.turnONPackage: Start")
+    whereClauseFTR="ASSETATTRID in (";
+    featuresSet= item.getMboSet("CHILDRENITEMSTRUCT")
+    feature=featuresSet.moveFirst();
+    while feature is not None:
+        whereClauseFTR=whereClauseFTR+"'"+feature.getString("ITEMNUM")+"'"
+        feature=featuresSet.moveNext()
+    whereClauseFTR=whereClauseFTR+")"
+    whereClauseFTR=whereClauseFTR.replace("''","','")
+    if featuresSet.isEmpty()==False:
+        assetSpecSet=asset.getMboSet("HMEALLFTRSPEC")
+        assetSpecSet.setWhere(whereClauseFTR)
+        assetSpecSet.reset()
+        assetSpec=assetSpecSet.moveFirst(); 
+        while assetSpec is not None:
+            numValue=assetSpec.getInt("NUMVALUE");
+            value=numValue+1
+            assetSpec.setValue("NUMVALUE",value,2L)
+            assetSpec=assetSpecSet.moveNext()
+    Log("INFO","OSIN.HMEAGREEMENTS.turnONPackage: End")
+
+def turnOFFPackage(asset,item):
+    Log("INFO","OSIN.HMEAGREEMENTS.turnOFFPackage: Start")
+    value=0;
+    whereClauseFTR="ASSETATTRID in (";
+    featuresSet= item.getMboSet("CHILDRENITEMSTRUCT")
+    feature=featuresSet.moveFirst();
+    while feature is not None:
+        whereClauseFTR=whereClauseFTR+"'"+feature.getString("ITEMNUM")+"'"
+        feature=featuresSet.moveNext()
+    whereClauseFTR=whereClauseFTR+")"
+    whereClauseFTR=whereClauseFTR.replace("''","','")
+    if featuresSet.isEmpty()==False:
+        assetSpecSet=asset.getMboSet("HMEALLFTRSPEC")
+        assetSpecSet.setWhere(whereClauseFTR)
+        assetSpecSet.reset()
+        assetSpec=assetSpecSet.moveFirst(); 
+        while assetSpec is not None:
+            numValue=assetSpec.getInt("NUMVALUE");
+            if assetSpec.getMboValue("NUMVALUE").isNull()==True or numValue<=0:
+                value=0
+            else:
+                value=numValue-1
+            assetSpec.setValue("NUMVALUE",value,2L)
+            assetSpec=assetSpecSet.moveNext()
+    Log("INFO","OSIN.HMEAGREEMENTS.turnOFFPackage: End")
+
+def changeBillScheduleStatus(pluspBillSchedule,status,memo,who):
+    Log("INFO","OSIN.HMEAGREEMENTS.changeBillScheduleStatus: Start")
+    currentDate = MXServer.getMXServer().getDate(); 
+    hmePluspbsStatusSet=pluspBillSchedule.getMboSet("HMEPLUSPBSSTATUS")
+    hmePluspbsStatus=hmePluspbsStatusSet.add(2L);
+    hmePluspbsStatus.setValue("CHANGEBY",who,2L)
+    hmePluspbsStatus.setValue("CHANGEDATE",currentDate,2L)
+    hmePluspbsStatus.setValue("MEMO",memo,2L)
+    hmePluspbsStatus.setValue("STATUS",status,2L)
+    hmePluspbsStatus.setValue("ORGID",pluspBillSchedule.getString("ORGID"),2L)
+    hmePluspbsStatus.setValue("SCHEDULE",pluspBillSchedule.getString("SCHEDULE"),2L)
+    hmePluspbsStatus.setValue("AGREEMENT",pluspBillSchedule.getString("AGREEMENT"),2L)
+    pluspBillSchedule.setValue("HMEBILLSTATUS",status,2L)
+    pluspBillSchedule.setValue("HMEBILLSTATUSDATE",currentDate,2L)
+    Log("INFO","OSIN.HMEAGREEMENTS.changeBillScheduleStatus: End")
+
+def agreementRollBack(MXTrans,pluspAgreement):
+    Log("INFO","OSIN.HMEAGREEMENTS.AgreementRollBack: Start")
+    #not finished...
+    MXTrans.rollback()
+    MXTrans.save()
+    Log("INFO","OSIN.HMEAGREEMENTS.AgreementRollBack: End")
+
+def createSalesOrder(agreement, pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.createSalesOrder: Start")
+    pluspSalesOrderSet=None;
+    compStatus = pluspBillSchedule.getTranslator().toExternalDefaultValue("PLUSPSOSTATUS", "COMPLETE", agreement);
+    localDate = MXServer.getMXServer().getDate();
+    try:
+        pluspSalesOrderSet = MXServer.getMXServer().getMboSet("PLUSPSALESORDER", agreement.getUserInfo());
+        customerOrg=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONORG")
+        customerSite=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE") 
+        pluspSalesOrder = pluspSalesOrderSet.add(2L);
+        pluspSalesOrder.setValue("AGREEMENT", pluspBillSchedule.getString("AGREEMENT"), 11L);
+        pluspSalesOrder.setValue("REVNUM", pluspBillSchedule.getString("REVISIONNUM"), 2L);
+        pluspSalesOrder.setValue("BILLSCHED", pluspBillSchedule.getString("SCHEDULE"), 11L);
+        pluspSalesOrder.setValue("CHANGEBY", "MAXADMIN", 2L);
+        pluspSalesOrder.setValue("CHANGEDATE", localDate, 2L);
+        pluspSalesOrder.setValue("SITEID",customerSite , 2L);
+        pluspSalesOrder.setValue("ORGID", customerOrg, 2L);
+        pluspSalesOrder.setValue("CUSTOMER", agreement.getString("CUSTOMER"), 2L);
+        pluspSalesOrder.setValue("ENTERDATE", localDate, 2L);
+        pluspSalesOrder.setValue("ENTEREDBY", "MAXADMIN", 2L);
+        pluspSalesOrder.setValue("STATUS", compStatus, 2L);
+        pluspSalesOrder.setValue("STATUSDATE", localDate, 2L);
+        pluspSalesOrder.setValue("ADDEDBYBILLSCHED", True, 2L);
+        pluspSalesOrder.getMboValue("SALESORDERNUM").autoKeyByMboSiteOrg();
+        pluspBSItemList=getPluspBSItemList(pluspBillSchedule)
+        pluspSalesOrder.setValue("DESCRIPTION", pluspBSItemList.getString("ITEMDESCRIPTION"), 2L);
+        pluspBSItemList.createGBTrans(pluspSalesOrder);        
+        pluspSalesOrderSet.save();        
+        Log("INFO","OSIN.HMEAGREEMENTS.createSalesOrder: End")        
+    finally:
+        clearAndCloseMboSet(pluspSalesOrderSet);
+    return pluspSalesOrder;
+
+def createBillBatch(pluspBillSchedule, pluspAgreement, paramDate):
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillBatch: Start")    
+    str1 = pluspBillSchedule.getString("StatusToCreateBB");
+    str2 = MXServer.getMXServer().getMaximoDD().getTranslator().toInternalString("PLUSPBILLBATCHST", str1, pluspBillSchedule);
+    localPlusPBillBatchSet=None;
+    try:
+        localPlusPBillBatchSet = MXServer.getMXServer().getMboSet("PLUSPBILLBATCH", pluspBillSchedule.getUserInfo());
+        localPlusPBillBatchSet.setAutoKeyFlag(False);
+        localSqlFormat = SqlFormat("customer = :1 and agreement = :2 and billingschedule = :3 and status not in (:&SYNONYMLIST&_PLUSPBILLBATCHST[BILLED,CANCEL])");
+        localSqlFormat.setObject(1, "PLUSPBILLBATCH", "customer", pluspAgreement.getString("CUSTOMER"));
+        localSqlFormat.setObject(2, "PLUSPBILLBATCH", "agreement", pluspBillSchedule.getString("AGREEMENT"));
+        localSqlFormat.setObject(3, "PLUSPBILLBATCH", "billingschedule", pluspBillSchedule.getString("SCHEDULE"));
+        localPlusPBillBatchSet.setWhere(localSqlFormat.format());
+        if (localPlusPBillBatchSet.isEmpty()):
+            localObject = localPlusPBillBatchSet.add(2L);
+            localObject.setValue("ORGID", pluspBillSchedule.getString("ORGID"), 2L);
+            localPlusPBillBatchSet.setAutoKeyFlag(True);
+            localObject.setAutokeyFields();
+            localObject.setValue("DESCRIPTION", pluspBillSchedule.getString("DESCRIPTION"));
+            localObject.setValue("CUSTOMER", pluspAgreement.getString("CUSTOMER"));
+            localObject.setValue("AGREEMENT", pluspBillSchedule.getString("AGREEMENT"), 9L);
+            localObject.setValue("REVISIONNUM", pluspAgreement.getInt("revisionnum"));
+            localObject.setValue("BILLENDDATE", paramDate);
+            localObject.setValue("SCHEDULEDATE", pluspBillSchedule.getDate("NEXTBILLDATE"));
+            localObject.setValue("BILLINGSCHEDULE", pluspBillSchedule.getString("SCHEDULE"));
+            if "INPROGRESS" == str2:
+                localObject.setValue("STATUS", str1);
+            localObject.getThisMboSet().save();            
+    finally:
+        clearAndCloseMboSet(localPlusPBillBatchSet);
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillBatch: End")        
+    return localPlusPBillBatchSet.getMboForUniqueId(localObject.getUniqueIDValue());
+
+def createBillLines(paramMboRemote):
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillLines: Start")    
+    paramMboRemote.createBillLines("PLUSPSALESORDER");    
+    paramMboRemote.getThisMboSet().reset();    
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillLines: End")
+    return paramMboRemote.getThisMboSet().getMboForUniqueId(paramMboRemote.getUniqueIDValue());
+
+def createBillingScheduleHistory(pluspAgreement,paramDate, pluspBillSchedule, pluspBillBatch, paramString):
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillingScheduleHistory: Start")
+    pluspBSHistSet=None;
+    try:
+        pluspBSHistSet = MXServer.getMXServer().getMboSet("PLUSPBSHIST", pluspBillSchedule.getUserInfo());
+        localSqlFormat = SqlFormat("orgid = :1 and billbatch = :2");
+        localSqlFormat.setObject(1, "PLUSPBSHIST", "orgid", pluspBillSchedule.getString("ORGID"));
+        localSqlFormat.setObject(2, "PLUSPBSHIST", "billbatch", pluspBillBatch.getString("BILLBATCHNUM"));
+        pluspBSHistSet.setWhere(localSqlFormat.format());
+        if (pluspBSHistSet.count() > 0):
+            pluspBSHist = pluspBSHistSet.getMbo(0);
+            pluspBSHist.setValue("CREATEDATE", paramDate);    
+        else:
+            pluspBSHistSet.cleanup()
+            pluspBSHist = pluspBSHistSet.add(2L);
+            pluspBSHist.setValue("AGREEMENT", pluspBillSchedule.getString("AGREEMENT"));
+            pluspBSHist.setValue("ORGID", pluspBillSchedule.getString("ORGID"));
+            pluspBSHist.setValue("REVISIONNUM", pluspBillSchedule.getString("REVISIONNUM"));
+            pluspBSHist.setValue("SCHEDULE", pluspBillSchedule.getString("SCHEDULE"));
+            pluspBSHist.setValue("SCHEDULEDATE", pluspBillSchedule.getDate("NEXTBILLDATE"));
+            pluspBSHist.setValue("BILLBATCH", pluspBillBatch.getString("BILLBATCHNUM"));
+            pluspBSHist.setValue("CREATEDATE", paramDate);
+            pluspBSHist.setValue("BILLAMOUNT", pluspBillBatch.getDouble("BATCHTOTAL"));
+            if "INPROGRESS" == paramString:
+                pluspBSHist.setValue("STATUS", pluspBillBatch.getString("STATUS"));
+        pluspBSHist.getThisMboSet().save();
+    finally:
+        clearAndCloseMboSet(pluspBSHistSet);    
+    Log("INFO","OSIN.HMEAGREEMENTS.createBillingScheduleHistory: End")
+
+def updateBillingScheduleInfo(pluspBillSchedule, pluspBillBatch, paramString):
+    Log("INFO","OSIN.HMEAGREEMENTS.updateBillingScheduleInfo: Start")
+    if "INPROGRESS" == paramString:    
+        pluspBillSchedule.setValue("BILLBATCHSTATUS", pluspBillBatch.getString("STATUS"), 2L);
+        pluspBillSchedule.setValue("CURRENTBILLBATCH", pluspBillBatch.getString("BILLBATCHNUM"), 2L);
+        pluspBillSchedule.setModified(True);
+        localMboSetRemote = pluspBillSchedule.getMboSet("PLUSPBILLSCHEDULEPNDREV");
+        if ((localMboSetRemote != None) and (localMboSetRemote.isEmpty()==False)):
+            localMboRemote = localMboSetRemote.getMbo(0);
+            localMboRemote.setValue("BILLBATCHSTATUS", pluspBillBatch.getString("STATUS"), 2L);
+            localMboRemote.setValue("CURRENTBILLBATCH", pluspBillBatch.getString("BILLBATCHNUM"), 2L);
+    Log("INFO","OSIN.HMEAGREEMENTS.updateBillingScheduleInfo: End")
+
+def updateBillBatchStatus(paramPlusPBillBatchRemote, paramString):
+    Log("INFO","OSIN.HMEAGREEMENTS.updateBillBatchStatus: Start")
+    localPlusPBillServiceRemote = MXServer.getMXServer().lookup("PLUSPBILL");
+    str1 = "";
+    str2 = "";
+    arrayOfString = [str1, str2];
+    localPlusPBillServiceRemote.updateBillBatchStatus(paramPlusPBillBatchRemote, paramString, arrayOfString, False);
+    Log("INFO","OSIN.HMEAGREEMENTS.updateBillBatchStatus: End")
+
+def deleteSalesOrders(pluspSalesOrder):
+    Log("INFO","OSIN.HMEAGREEMENTS.deleteSalesOrders: Start")
+    if pluspSalesOrder is not None:
+        l = pluspSalesOrder.getUniqueIDValue();
+        pluspSalesOrder.getThisMboSet().getMboForUniqueId(l).delete(2L);
+        pluspSalesOrder.getThisMboSet().save();
+    Log("INFO","OSIN.HMEAGREEMENTS.deleteSalesOrders: End")
+
+def plusPBillGeneration(ctx,pluspAgreement,pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.plusPBillGeneration: Start")
+    pluspSalesOrder=None;
+    try:    
+        localDate = MXServer.getMXServer().getDate();
+        localTranslate = MXServer.getMXServer().getMaximoDD().getTranslator();
+        pluspBillBatch = createBillBatch(pluspBillSchedule, pluspAgreement, localDate);
+        pluspSalesOrder=createSalesOrder(pluspAgreement, pluspBillSchedule)
+        if pluspSalesOrder is not None:
+            pluspBillBatch.getThisMboSet().save();
+            pluspBillBatch = pluspBillBatch.getThisMboSet().getMboForUniqueId(pluspBillBatch.getUniqueIDValue());
+            pluspBillBatch = createBillLines(pluspBillBatch);
+        Str = localTranslate.toInternalString("PLUSPBILLBATCHST", pluspBillSchedule.getString("StatusToCreateBB"), pluspBillSchedule);
+        createBillingScheduleHistory(pluspAgreement,localDate, pluspBillSchedule, pluspBillBatch, Str);        
+        updateBillingScheduleInfo(pluspBillSchedule, pluspBillBatch, Str);        
+        updateBillBatchStatus(pluspBillBatch, Str);
+        pluspBillSchedule.getThisMboSet().save();
+    except Exception, localException:   
+        deleteSalesOrders(pluspSalesOrder);
+        ctx.error('configure','BlankMsg',[str(localException)])        
+    Log("INFO","OSIN.HMEAGREEMENTS.plusPBillGeneration: End")
+
+def deEnrol(vin,agreement,erasesim,simstatus):
+    Log("INFO","OSIN.HMEAGREEMENTS.deEnrol: Start")
+    pluspbillscheduleSet = agreement.getMboSet("PLUSPBILLSCHEDULE");
+    pluspbillscheduleSet.setWhere("HMESERIALNUM='"+vin+"' and HMEBILLSTATUS in ('ACTIVE','PENDING','PROVPENDING','DAQPENDING','AWTNGPAY','AWTNGRENEW','SUSPENDED')")   
+    if pluspbillscheduleSet is not None and pluspbillscheduleSet.isEmpty()==False:
+        pluspBillSchedule=pluspbillscheduleSet.moveFirst()
+        while pluspBillSchedule is not None:
+            if isRefundable(pluspBillSchedule) == True:
+                changeBillScheduleStatus(pluspBillSchedule,"AWTNGREFUND","deEnrol","system")
+            else:
+                changeBillScheduleStatus(pluspBillSchedule,"CANCELLED","deEnrol","system")                
+            pluspBillSchedule=pluspbillscheduleSet.moveNext();            
+    asset=getAssetBySerialnum(vin,agreement);
+    if asset is not None:
+        assetSpecSet=asset.getMboSet("ASSETSPEC")
+        if erasesim:
+            assetSpecSet.setWhere("ASSETATTRID like 'FTR%' or ASSETATTRID in('HMEPRODUCTOWNID','HMECOODATE','HMECOOEXPIRY','HMENOTFYCHNL','HMENOTFYDA','HMESIMACTIVE','HMEJOURNEYHIST','HMENICKNAME','HMEREGNUMBER','HMECONTACTPUSH','HMECONTACTSMS','HMECONTACTEMAIL','HMECOOSTATUS')")
+        else:
+            assetSpecSet.setWhere("ASSETATTRID like 'FTR%' or ASSETATTRID in('HMEPRODUCTOWNID','HMECOODATE','HMECOOEXPIRY','HMENOTFYCHNL','HMENOTFYDA','HMEJOURNEYHIST','HMENICKNAME','HMEREGNUMBER','HMECONTACTPUSH','HMECONTACTSMS','HMECONTACTEMAIL','HMECOOSTATUS')")
+        if assetSpecSet is not None and assetSpecSet.isEmpty()==False:
+            assetSpec=assetSpecSet.moveFirst();
+            Log("INFO","OSIN.HMEAGREEMENTS.deEnrol: Update asset specs") #dont delete this log
+            while assetSpec is not None:
+                spec=assetSpec.getString("ASSETATTRID")
+                domain=assetSpec.getString("CLASSSPEC.DOMAINID")
+                Log("INFO","OSIN.HMEAGREEMENTS.deEnrol: AssetSpec: "+str(spec)+" domain:"+str(domain))
+                if 'HME' in spec:
+                    assetSpec.setValueNull("ALNVALUE")
+                    if domain=="HMEYORN":
+                        assetSpec.setValue("ALNVALUE","0")
+                    if spec=='HMESIMACTIVE' and simstatus is not None:
+                        assetSpec.setValue("ALNVALUE",simstatus)
+                elif 'FTR' in spec:
+                    assetSpec.setValue("NUMVALUE",0)           
+                assetSpec=assetSpecSet.moveNext();
+        assetCustodianSet=asset.getMboSet("ASSETUSERCUST")
+        assetCustodianSet.deleteAll()
+    Log("INFO","OSIN.HMEAGREEMENTS.deEnrol: End")
+
+def getItemStructLine(itemnum,itemsetid,vin):
+    Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: Start")
+    itemstructMbo=None;
+    Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: Checking if this subscription is belongs to an itemstruct")
+    itemstructMboSet=mbo.getMboSet("$itemStruct","ITEMSTRUCT"," parent is not null and itemnum='"+itemnum+"' and itemsetid='"+itemsetid+"' and parent=itemid and exists (select 1 from item where itemnum=itemstruct.parent and commodity='PACKGRP' and itemsetid=itemstruct.itemsetid)")
+    if itemstructMboSet.isEmpty()==False:
+        totalItemStruct=itemstructMboSet.count();
+        if totalItemStruct==1:
+            Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: Only one on itemstruct.. chill")
+            itemstructMbo=itemstructMboSet.moveFirst();
+        else:
+            Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: More than one on itemstruct.. damn it!")
+            itemstructMboSet.setOrderBy("HMESEQUENCE asc")
+            BSItemnumListMboSet=mbo.getMboSet("$BSItemnumListMboSet","PLUSPBSITEMLIST","itemnum='"+itemnum+"' and itemsetid='"+itemsetid+"' and exists(select 1 from pluspbillschedule where revisionnum=pluspbsitemlist.revisionnum and agreement=pluspbsitemlist.agreement and schedule=pluspbsitemlist.schedule and orgid=pluspbsitemlist.orgid and hmeserialnum='"+vin+"' and hmebillstatus not in ('INCOMPLETE','REFUNDED','AWTNGPAY','AWTNGREFUND','CANCELLED') and exists(select 1 from pluspagreement where agreement=pluspbillschedule.agreement and revisionnum=pluspbillschedule.revisionnum and orgid=pluspbillschedule.orgid and status='APPR' and agreement='"+mbo.getString("agreement")+"'))")
+            Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: BSItemnumListMboSet ("+str(BSItemnumListMboSet.count())+") Complete Where: "+BSItemnumListMboSet.getCompleteWhere())
+            line=BSItemnumListMboSet.count();
+            if line > totalItemStruct:
+                line=totalItemStruct;
+            itemstructMbo=itemstructMboSet.getMbo(line)    
+        Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: Uff.. Done by itemstruct stuff")
+    Log("INFO","OSIN.HMEAGREEMENTS.getItemStructLine: End")
+    return itemstructMbo;
+
+def checkIfAlternative(agreement,itemItemnum):
+    Log("INFO","ASSET_INIT.checkIfAlternative: Start")
+    altItemMboSet=agreement.getMboSet("$altItemMboSet","ITEM","exists(select 1 from ALTITEM where ALTITEMNUM in('"+itemItemnum+"') and itemnum=item.itemnum and itemsetid=item.itemsetid fetch first row only)")
+    altItemMbo=altItemMboSet.getMbo(0)
+    if altItemMbo is not None:
+        Log("INFO","ASSET_INIT.checkIfAlternative: Returning item "+str(altItemMbo.getString("ITEMNUM"))) 
+        return altItemMbo
+    Log("INFO","ASSET_INIT.checkIfAlternative: End") 
+    return None
+
+def getLastActiveSubscriptionPG(agreement,vin,itemstructMbo):
+    Log("INFO","OSIN.HMEAGREEMENTS.getLastActiveSubscriptionPG: Start")    
+    existingPlupspBSPG=None;
+    existingPlupspBSPGSet=agreement.getMboSet("$existingPlupspBSPGSet","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE') and HMESERIALNUM ='"+vin+"' and exists(select from pluspbsitemlist where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and hmepackagegroup='"+itemstructMbo.getString("PARENT")+"' and pluspbillschedule.schedule=pluspbsitemlist.schedule) and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+agreement.getString("ORGID")+"' and revisionnum='"+str(agreement.getInt("revisionnum")-1)+"'");
+    existingPlupspBSPGSet.setOrderBy("HMEENDDATE desc")
+    existingPlupspBSPGSet.reset();
+    existingPlupspBSPGSet.setFlag(MboConstants.DISCARDABLE, True);
+    if existingPlupspBSPGSet is not None and existingPlupspBSPGSet.isEmpty()==False:                                                      
+        existingPlupspBSPG=existingPlupspBSPGSet.moveFirst();
+    else:
+        itemstructMboSet=mbo.getMboSet("$itemStructPG","ITEMSTRUCT"," parent ='"+itemstructMbo.getString("PARENT")+"' and itemsetid='"+itemstructMbo.getString("ITEMSETID")+"' and parent=itemid and exists (select 1 from item where itemnum=itemstruct.parent and commodity='PACKGRP' and itemsetid=itemstruct.itemsetid) and hmesequence<"+str(itemstructMbo.getInt("hmesequence")))
+        itemstructMboSet.setOrderBy("hmesequence desc")
+        if itemstructMboSet.isEmpty()==False:
+            prevItemnum=itemstructMboSet.moveFirst().getString("ITEMNUM");
+            alternativeItemnum=checkIfAlternative(agreement,prevItemnum);
+            if alternativeItemnum is not None:
+                existingPlupspBSPGSet2=agreement.getMboSet("$existingPlupspBSPGSet2","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE') and HMESERIALNUM ='"+vin+"' and exists(select 1 from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum='"+alternativeItemnum.getString("ITEMNUM")+"' and pluspbillschedule.schedule=pluspbsitemlist.schedule) and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+agreement.getString("ORGID")+"' and revisionnum='"+str(agreement.getInt("revisionnum")-1)+"'");
+                existingPlupspBSPGSet2.setOrderBy("HMEENDDATE desc")
+                existingPlupspBSPGSet2.reset();
+                existingPlupspBSPGSet2.setFlag(MboConstants.DISCARDABLE, True);
+                if existingPlupspBSPGSet2 is not None and existingPlupspBSPGSet2.isEmpty()==False:                                                      
+                    existingPlupspBSPG=existingPlupspBSPGSet2.moveFirst();        
+    Log("INFO","OSIN.HMEAGREEMENTS.getLastActiveSubscriptionPG: End")
+    return existingPlupspBSPG
+
+def getLastActiveSubscription(agreement,vin,itemnum):
+    Log("INFO","OSIN.HMEAGREEMENTS.getLastActiveSubscription: Start")    
+    altItemMbo=checkIfAlternative(agreement,itemnum)
+    if altItemMbo is not None:
+        item="'"+altItemMbo.getString("ITEMNUM")+"','"+itemnum+"'"
+    else:
+        item="'"+itemnum+"'"
+    existingPlupspBillSchedule=None;
+    existingPlupspBillScheduleSet=agreement.getMboSet("$pluspBillSchedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE','PENDING','SUSPENDED','AWTNGRENEW') and HMESERIALNUM ='"+vin+"' and exists (select 1 from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum in ("+item+") and pluspbillschedule.schedule=pluspbsitemlist.schedule) and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+agreement.getString("ORGID")+"' and revisionnum='"+str(agreement.getInt("revisionnum")-1)+"'");
+    existingPlupspBillScheduleSet.setOrderBy("HMEENDDATE desc");
+    existingPlupspBillScheduleSet.reset();
+    existingPlupspBillScheduleSet.setFlag(MboConstants.DISCARDABLE, True);
+    if existingPlupspBillScheduleSet is not None and existingPlupspBillScheduleSet.isEmpty()==False:
+        existingPlupspBillSchedule=existingPlupspBillScheduleSet.moveFirst();
+    Log("INFO","OSIN.HMEAGREEMENTS.getLastActiveSubscription: End")
+    return existingPlupspBillSchedule;
+
+def getAutorenewFlag(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.getAutorenewFlag: Start")
+    flag = False;
+    pluspBSItemList=getPluspBSItemList(pluspBillSchedule)
+    if pluspBSItemList.getMboValue("HMEAUTORENEW").isNull() == False:
+        flag = pluspBSItemList.getBoolean("HMEAUTORENEW")
+    Log("INFO","OSIN.HMEAGREEMENTS.getAutorenewFlag: flag: " + str(flag))
+    Log("INFO","OSIN.HMEAGREEMENTS.getAutorenewFlag: End")
+    return flag;
+
+def getType(pluspBillSchedule):
+    type = None;
+    pluspBSItemList=getPluspBSItemList(pluspBillSchedule)
+    if pluspBSItemList.getMboValue("HMECOMPTRIAL").isNull() == False:
+        type = pluspBSItemList.getString("HMECOMPTRIAL")
+    return type;
+
+def ownerChangedFlag(assetForCP):
+    Log("INFO","OSIN.HMEAGREEMENTS.ownerChangedFlag: Start")    
+    assetOwnerChgMboSet=mbo.getMboSet("$assetOwnerChgMboSet","ASSETUSERCUST","assetnum='"+assetForCP.getString("ASSETNUM")+"' and siteid='"+assetForCP.getString("SITEID")+"' and isprimary=1")
+    if assetOwnerChgMboSet.isEmpty()==False:
+        assetOwnerChgMbo = assetOwnerChgMboSet.moveFirst()
+        if assetOwnerChgMbo.getBoolean("HMEISCOO"):
+            assetOwnerChgMbo.setValue("HMEISCOO",False)
+    Log("INFO","OSIN.HMEAGREEMENTS.ownerChangedFlag: End")
+    assetOwnerChgMboSet.close()
+
+def getAssetBySerialnum(serialnum,mbo):
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetBySerialnum: Start")
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetBySerialnum: Get Asset from vin "+serialnum)
+    assetSet=mbo.getMboSet("$asset","ASSET","serialnum='"+serialnum+"' and status not in ('DECOMMISSIONED','INACTIVE') and MOVED=0")
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetBySerialnum: assetSet ("+str(assetSet.count())+") Complete Where: "+assetSet.getCompleteWhere())
+    if assetSet is None and assetSet.isEmpty() == True:
+        ctx.error('configure','BlankMsg',['getAssetBySerialnum: assetSet is Empty'])
+    asset=assetSet.moveFirst()       
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetBySerialnum: End")
+    return asset
+
+def getAsset(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.getAsset: Start")
+    asset=None;
+    asset=getAssetBySerialnum(pluspBillSchedule.getString("HMESERIALNUM"),pluspBillSchedule);    
+    Log("INFO","OSIN.HMEAGREEMENTS.getAsset: End")
+    return asset
+
+def getPluspBSItemList(pluspBillSchedule):
+    pluspBSItemSet=pluspBillSchedule.getMboSet("PLUSPBSITEM")
+    pluspBSItemSet.setFlag(MboConstants.DISCARDABLE, True);
+    if pluspBSItemSet is None or pluspBSItemSet.isEmpty() == True:
+        ctx.error('configure','BlankMsg',['getpluspBSItemList: pluspBSItemSet is Empty'])
+    pluspBSItem=pluspBSItemSet.moveFirst()
+    pluspBSItemListSet=pluspBSItem.getMboSet("PLUSPBSITEMLIST")
+    if pluspBSItemListSet is None and pluspBSItemListSet.isEmpty() == True:
+        ctx.error('configure','BlankMsg',['getpluspBSItemList: pluspBSItemListSet is Empty'])   
+    pluspBSItemList=pluspBSItemListSet.moveFirst()
+    return pluspBSItemList
+
+def getPackage(pluspbillschedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.getPackage: Start")
+    pluspBSItemList=getPluspBSItemList(pluspbillschedule)
+    itemSet=pluspBSItemList.getMboSet("$item","ITEM","itemnum = '"+pluspBSItemList.getString("itemnum")+"' and itemsetid = '"+pluspBSItemList.getString("itemsetid")+"'");
+    Log("INFO","OSIN.HMEAGREEMENTS.getPackage: itemSet ("+str(itemSet.count())+") Complete Where: "+itemSet.getCompleteWhere())
+    item=itemSet.moveFirst();
+    Log("INFO","OSIN.HMEAGREEMENTS.getPackage: End")
+    return item
+
+def getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,revisionnum,linenumber,discardable):
+    Log("INFO","OSIN.HMEAGREEMENTS.getBillSchedule: Start")
+    hmetransidStr=""    
+    linenumberStr=""
+    pluspBillSchedule = None;
+    if revisionnum is None:
+        revisionnum=agreement.getInt("revisionnum")
+    
+    statusStr="'"+status[0]+"'"
+    if len(status)>1:    
+        statusDim=1;
+        while (statusDim<len(status)):
+            statusStr=statusStr+",'"+status[statusDim]+"'"
+            statusDim=statusDim+1;
+    
+    if hmetransid is not None:
+        hmetransidStr= " and HMETRANSID='"+hmetransid+"' "
+    if linenumber is not None:
+        linenumberStr= " and LINENUMBER='"+linenumber+"' "
+    
+    pluspbillscheduleSet=agreement.getMboSet("$pluspagreement","PLUSPBILLSCHEDULE","hmebillstatus in ("+statusStr+") and hmeserialnum='"+hmeserialnum+"' and revisionnum="+str(revisionnum)+" "+hmetransidStr+" and exists(select 1 from pluspbsitemlist where agreement=pluspbillschedule.agreement and orgid=pluspbillschedule.orgid and revisionnum=pluspbillschedule.revisionnum and itemnum='"+itemnum+"' "+linenumberStr+" and pluspbillschedule.schedule=pluspbsitemlist.schedule) and pluspbillschedule.agreement='"+agreement.getString("AGREEMENT")+"'");
+    if discardable==True:
+        pluspbillscheduleSet.setFlag(MboConstants.DISCARDABLE, True);
+    pluspbillscheduleSet.setOrderBy("HMEENDDATE desc")
+    pluspbillscheduleSet.reset()    
+    if pluspbillscheduleSet.isEmpty()==False:
+        pluspBillSchedule=pluspbillscheduleSet.moveFirst();        
+        
+    Log("INFO","OSIN.HMEAGREEMENTS.getBillSchedule: End")
+    return pluspBillSchedule
+
+def getPreviousPluspBillSchedule(pluspbillschedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.getPreviousPluspBillSchedule: Start")
+    itemnum=getPackage(pluspbillschedule).getString("ITEMNUM")
+    agreement=pluspbillschedule.getOwner();
+    revisionnum=agreement.getInt("REVISIONNUM")
+    existingPlupspBillScheduleSet=pluspbillschedule.getMboSet("$pluspbillschedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE','PENDING') and HMESERIALNUM ='"+pluspbillschedule.getString("HMESERIALNUM")+"' and schedule in (select schedule from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum='"+itemnum+"') and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+agreement.getString("ORGID")+"' and revisionnum='"+str(revisionnum-1)+"'");
+    existingPlupspBillScheduleSet.setOrderBy("HMEENDDATE desc")
+    existingPlupspBillScheduleSet.reset();
+    Log("INFO","OSIN.HMEAGREEMENTS.getPreviousPluspBillSchedule: existingPlupspBillScheduleSet ("+str(existingPlupspBillScheduleSet.count())+") Complete Where: "+existingPlupspBillScheduleSet.getCompleteWhere())
+    if existingPlupspBillScheduleSet is not None and existingPlupspBillScheduleSet.isEmpty()==False:
+        existingPlupspBillSchedule=existingPlupspBillScheduleSet.moveFirst();
+        Log("INFO","OSIN.HMEAGREEMENTS.getPreviousPluspBillSchedule: Last pluspBillSchedule found ="+str(existingPlupspBillSchedule.getString("SCHEDULE"))) 
+        return existingPlupspBillSchedule
+    else:
+        Log("INFO","OSIN.HMEAGREEMENTS.getPreviousPluspBillSchedule: No existing bill schedule found")
+        return None
+    Log("INFO","OSIN.HMEAGREEMENTS.getPreviousPluspBillSchedule: End")
+
+def getAssetAttribute(asset,attribute):
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetAttribute: Start")
+    value=None;
+    assetSpecSet=asset.getMboSet("ASSETSPEC")
+    assetSpecSet.setWhere("ASSETATTRID ='"+attribute+"'")
+    assetSpecSet.reset()
+    if assetSpecSet.isEmpty()==False:
+        assetSpec=assetSpecSet.moveFirst();
+        if attribute.startswith("HME"):
+            value=assetSpec.getString("ALNVALUE")
+        elif attribute.startswith("FTR"):
+            value=assetSpec.getString("NUMVALUE")    
+    clearAndCloseMboSet(assetSpecSet)
+    return value
+    Log("INFO","OSIN.HMEAGREEMENTS.getAssetAttribute: End")
+
+def getRenewedSubscription(pluspbillschedule):
+    Log("INFO","OSIN.HMEOBJ0004.getRenewedSubscription: Start")
+    revisionnum=pluspbillschedule.getInt("REVISIONNUM")
+    agreement=pluspbillschedule.getString("AGREEMENT")
+    orgid=pluspbillschedule.getString("ORGID")
+    serialnum=pluspbillschedule.getString("HMESERIALNUM")
+    hmepackagecore=pluspbillschedule.getString("HMEPACKAGECORE")
+    renewedSubscriptionSet=pluspbillschedule.getMboSet("$pluspbillschedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE','PENDING') and HMESERIALNUM ='"+serialnum+"' and HMEPACKAGECORE='"+hmepackagecore+"' and agreement='"+agreement+"' and orgid='"+orgid+"' and revisionnum='"+str(revisionnum)+"' and schedule!='"+pluspbillschedule.getString("SCHEDULE")+"'");
+    renewedSubscriptionSet.setOrderBy("FIRSTBILLDATE desc")
+    renewedSubscriptionSet.reset();
+    Log("INFO","OSIN.HMEOBJ0004.getRenewedSubscription: renewedSubscriptionSet ("+str(renewedSubscriptionSet.count())+") Complete Where: "+renewedSubscriptionSet.getCompleteWhere())
+    if renewedSubscriptionSet is not None and renewedSubscriptionSet.isEmpty()==False:
+        renewedSubscription=renewedSubscriptionSet.moveFirst();
+        Log("INFO","OSIN.HMEOBJ0004.getRenewedSubscription: Last pluspBillSchedule found ="+str(renewedSubscription.getString("SCHEDULE"))) 
+        return renewedSubscription
+    else:
+        Log("INFO","OSIN.HMEOBJ0004.getRenewedSubscription: No existing bill schedule found")
+        return None
+    Log("INFO","OSIN.HMEOBJ0004.getRenewedSubscription: End")
+
+def setAssetAttribute(asset,attribute,value):
+    Log("INFO","OSIN.HMEAGREEMENTS.setAssetAttribute: Start")
+    assetSpecSet=asset.getMboSet("ASSETSPEC")
+    assetSpecSet.setWhere("ASSETATTRID ='"+attribute+"'")
+    assetSpecSet.reset()
+    if assetSpecSet.isEmpty()==False:
+        assetSpec=assetSpecSet.moveFirst();
+        if attribute.startswith("HME"):
+            assetSpec.setValue("ALNVALUE",value,2L)
+        elif attribute.startswith("FTR"):
+            value=assetSpec.getString("NUMVALUE",value,2L)
+    Log("INFO","OSIN.HMEAGREEMENTS.setAssetAttribute: End")
+
+def newPluspBSItemList(pluspbillschedule,itemnum,siteid):
+    Log("INFO","OSIN.HMEAGREEMENTS.newPluspBSItemList: Start")
+    pluspBSItemSet=pluspbillschedule.getMboSet("PLUSPBSITEM")
+    pluspBSItem=pluspBSItemSet.moveFirst();
+    pluspBSItemListSet=pluspBSItem.getMboSet("PLUSPBSITEMLIST")              
+    pluspBSItemList=pluspBSItemListSet.add()
+    pluspBSItemList.setValue("ITEMNUM",itemnum)                            
+    pluspBSItemList.setValue("SITEID",siteid)
+    Log("INFO","OSIN.HMEAGREEMENTS.newPluspBSItemList: End")
+    return pluspBSItemList;
+
+def cancelSubscription(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.cancelSubscription: Start") 
+    if pluspBillSchedule.getString("HMEBILLSTATUS") in ["ACTIVE","PENDING","SUSPENDED"]:
+        asset=getAsset(pluspBillSchedule)
+        item=getPackage(pluspBillSchedule)
+        if asset is not None and item is not None:
+            turnOFFPackage(asset,item)
+        else:
+            ctx.error('configure','BlankMsg',['cancelSubscription: Asset or Item is Null'])          
+    if isRefundable(pluspBillSchedule) == True:
+        changeBillScheduleStatus(pluspBillSchedule,"AWTNGREFUND","cancelSubscription","system")
+    else:
+        changeBillScheduleStatus(pluspBillSchedule,"CANCELLED","cancelSubscription","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.cancelSubscription: End")
+
+def expireSubscription(pluspbillschedule,agreement):
+    Log("INFO","OSIN.HMEAGREEMENTS.expireSubscription: Start") 
+    asset=getAsset(pluspbillschedule)
+    item=getPackage(pluspbillschedule)
+    if asset is not None and item is not None:
+        turnOFFPackage(asset,item)
+    else:
+        ctx.error('configure','BlankMsg',['expireSubscription: Asset or Item is Null']) 
+    changeBillScheduleStatus(pluspbillschedule,"EXPIRED","expireSubscription","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.expireSubscription: End")
+
+def newSubscription(ctx,agreement,vin,itemnum,autorenew,recurringPrice,priceBook):
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Start")
+    pluspbillscheduleSet=None;
+    pluspBillSchedule_interval=None;
+    pluspBSItemSet=None;
+    pluspBSItemListSet=None;
+    HMEPRETaxTotal=0
+    HMETaxAmount=0
+    isItemStruct=False;    
+    siteid=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE")
+    orgid=agreement.getString("ORGID")
+    revisionnum=agreement.getInt("revisionnum");    
+    pluspbillscheduleSet = agreement.getMboSet("PLUSPBILLSCHEDULE");    
+    if revisionnum>0:
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Revision is upper than 0 and autorenew is Set")    
+        existingPlupspBillScheduleSet=agreement.getMboSet("$pluspBillSchedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS in ('ACTIVE','PENDING','SUSPENDED','AWTNGPAY','AWTNGRENEW','PROVPENDING','DAQPENDING') and not exists (select 1 from HMEAUTORENEW where PLUSPBILLSCHEDULE.schedule=HMEAUTORENEW.schedule and HMEAUTORENEW.agreement=PLUSPBILLSCHEDULE.agreement and PLUSPBILLSCHEDULE.revisionnum=HMEAUTORENEW.revisionnum and pluspbillschedule.schedule=hmeautorenew.schedule) and HMESERIALNUM ='"+vin+"' and exists(select 1 from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum='"+itemnum+"' and HMEAUTORENEW=1 and pluspbillschedule.schedule=pluspbsitemlist.schedule) and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+orgid+"' and revisionnum='"+str(revisionnum-1)+"'");
+        existingPlupspBillScheduleSet.setOrderBy("HMEENDDATE desc")
+        existingPlupspBillScheduleSet.reset();
+        existingPlupspBillScheduleSet.setFlag(MboConstants.DISCARDABLE, True);                                     
+        if existingPlupspBillScheduleSet is not None and existingPlupspBillScheduleSet.isEmpty()==False: 
+            ctx.error('pluspbs','cannotSubsRenewPackTwice')
+    pluspBillSchedule=pluspbillscheduleSet.add()
+    pluspBillSchedule.getMboValue("schedule").autoKey();
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: schedule: "+ pluspBillSchedule.getString("schedule"))            
+    pluspBillSchedule.setValue("STATUSTOCREATEBB","BILLED")
+    pluspBillSchedule.setValue("HMESERIALNUM",vin)
+    asset=getAsset(pluspBillSchedule)    
+    pluspBillSchedule.setValue("HMEASSETNUM",asset.getString("ASSETNUM"),11L)
+    pluspBillSchedule.setValue("REVISIONNUM",revisionnum,2L)
+    changeBillScheduleStatus(pluspBillSchedule,"AWTNGPAY","newSubscription","system")
+    pluspBSItemSet=pluspBillSchedule.getMboSet("PLUSPBSITEM")
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: pluspBSItemSet is not None ")
+    pluspBSItem=pluspBSItemSet.moveFirst();
+    pluspBSItem.setValue("PRICEBOOK",priceBook,2L)    
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: pluspBSItem.agreement: "+pluspBSItem.getString("AGREEMENT"))  
+    pluspBSItemListSet=pluspBSItem.getMboSet("PLUSPBSITEMLIST")               
+    pluspBSItemList=pluspBSItemListSet.add()
+    pluspBSItemList.setValue("ITEMNUM",itemnum)                            
+    pluspBSItemList.setValue("SITEID",siteid)
+    comptrial=pluspBSItemList.getString("ITEM.HMECOMPTRIAL");
+    if comptrial is None or comptrial=="":
+        comptrial="P"
+        pluspBSItemList.setValue("ITEM.HMECOMPTRIAL","P",11L)
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Comptrial is null. Setting ITEM.HMECOMPTRIAL to Paid")
+    hmepackagetype=pluspBSItemList.getString("ITEM.HMEPACKAGETYPE");
+    pluspBSItemList.setValue("HMEAUTORENEW",autorenew)
+    pluspBSItemList.setValue("HMECOMPTRIAL",comptrial)
+    pluspBSItemList.setValue("HMEPACKAGETYPE",hmepackagetype)
+    pluspBSItemList.setValue("HMEPACKAGESUPPLIER",pluspBSItemList.getString("ITEM.HMEPACKAGESUPPLIER"))
+    pluspBSItemList.setValue("ITEMDESCRIPTION",pluspBSItemList.getString("ITEM.DESCRIPTION"))
+    pluspBSItemList.setValue("ITEMDESCRIPTION_LONGDESCRIPTION",pluspBSItemList.getString("ITEM.DESCRIPTION"))
+    pluspBSItemList.setValue("REVISIONNUM",revisionnum)
+    pluspBSItemList.setValue("QUANTITY",1)
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: UNITPRICE: "+str(recurringPrice))
+    pluspBSItemList.setValue("UNITPRICE",recurringPrice)    
+    if recurringPrice > 0:
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: RecurringPrice is upper than 0")
+        taxTypeSet=agreement.getMboSet("$taxtype","TAXTYPE","TYPECODE=1 and ORGID='"+orgid+"'");
+        taxTypeSet.reset();        
+        taxType=taxTypeSet.getMbo(0);
+        taxSet=taxType.getMboSet("TAX")
+        totalTaxRate=taxSet.sum("TAXRATE")
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: totalTaxRate: "+str(totalTaxRate))
+        if totalTaxRate > 0:
+            amount=pluspBSItemList.getInt("AMOUNT")
+            HMEPRETaxTotal= amount/((totalTaxRate/100)+1)
+            HMETaxAmount= amount-HMEPRETaxTotal
+    pluspBSItemList.setValue("HMEPRETAXTOTAL",HMEPRETaxTotal)
+    pluspBSItemList.setValue("HMETAXAMOUNT",HMETaxAmount)
+    itemstructMbo=getItemStructLine(itemnum,pluspBSItemList.getString("itemsetid"),vin);
+    if itemstructMbo is not None:
+        isItemStruct=True;
+        pluspBSItemList.setValue("HMESEQUENCE",itemstructMbo.getString("HMESEQUENCE"))
+        pluspBSItemList.setValue("HMEPACKAGEGROUP",itemstructMbo.getString("PARENT"))    
+    pluspBillSchedule.setValue("DESCRIPTION",pluspBSItemList.getString("ITEM.DESCRIPTION"))
+    pluspBillSchedule.setValue("HMEPACKAGECORE",pluspBSItemList.getString("ITEM.HMEPACKAGECORE"))
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: hmepaymentterm is fullfiled= "+pluspBSItemList.getString("ITEM.HMEPAYMENTTERM"))
+    pluspBillSchedule.setValue("PERIOD",pluspBSItemList.getString("ITEM.HMEPAYMENTTERM"))
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: hmeTerm is fullfiled= "+pluspBSItemList.getString("ITEM.HMETERM"))
+    pluspBillSchedule.setValue("INTERVAL",pluspBSItemList.getString("ITEM.HMETERM"))
+    pluspBillSchedule_interval=pluspBSItemList.getInt("ITEM.HMETERM");
+    pluspBillSchedule.setValue("FIRSTBILLDATE",MXServer.getMXServer().getDate(),2L)
+    cal=Calendar.getInstance();
+    pluspBillSchedule_term=pluspBillSchedule.getInt("TERM");    
+    if comptrial=="C" or comptrial=="CP":
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Package is complementary")
+        if revisionnum>0:
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Revision is upper than 0")            
+            status=["ACTIVE","PENDING","SUSPENDED","AWTNGPAY","AWTNGRENEW","PROVPENDING","DAQPENDING"]
+            existingPluspBillSchedule=getBillSchedule(agreement,status,vin,None,itemnum,revisionnum-1,None,True)
+            if existingPluspBillSchedule is not None: 
+                ctx.error('pluspbs','cannotSubsCompPackTwice')
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: No duplicated complementary subscription found")
+        if autorenew ==True:
+            ctx.error('pluspbs','cannotAutorenewCompPack')        
+        if hmepackagetype!="VIRTUALKEY":
+            hmeregdate=getAssetAttribute(asset,"HMEREGDATE")
+            if hmeregdate is not None and hmeregdate=="":
+                ctx.error('configure','BlankMsg',['To subscribe a Complementary Package, the asset attribute HMEREGDATE cannot be null'])
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: hmeregDate found: "+hmeregdate)
+            format = SimpleDateFormat("yyyy-MM-dd");
+            regdate = format.parse(hmeregdate);
+            if comptrial=="C":
+                Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Set firstBillDate to: "+str(regdate))
+                pluspBillSchedule.setValue("FIRSTBILLDATE",regdate,MboConstants.NOVALIDATION)            
+        changeBillScheduleStatus(pluspBillSchedule,"PROVPENDING","newSubscription","system")
+        pluspBillSchedule.setValue("STATUSTOCREATEBB","PAID")     
+        hmecompavailable=getAssetAttribute(asset,"HMECOMPAVAILABLE")
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: hmecompavailable found: "+hmecompavailable)
+        if hmecompavailable is not None and hmecompavailable=="":            
+            setAssetAttribute(asset,"HMECOMPAVAILABLE",agreement.getString("CUSTOMER"))          
+    elif comptrial=="T":
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Package is trial")
+        if revisionnum>0:
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Revision is upper than 0")            
+            status=["ACTIVE","PENDING","SUSPENDED","AWTNGPAY","AWTNGRENEW","PROVPENDING","DAQPENDING"]
+            existingPluspBillSchedule=getBillSchedule(agreement,status,vin,None,itemnum,revisionnum-1,None,True)                             
+            if existingPluspBillSchedule is not None: 
+                ctx.error('pluspbs','cannotSubsTrialPackTwice')
+        if pluspBSItemList.getString("ITEM.HMETRIALTERM")=="":
+            ctx.error('configure','BlankMsg',['The trial package does not have its term defined']);
+        if autorenew ==True:
+            ctx.error('pluspbs','cannotAutorenewTrialPack')
+        hmetrialterm=pluspBSItemList.getInt("ITEM.HMETRIALTERM");
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: hmetrialterm found: "+str(hmetrialterm))
+        calendario=Calendar.getInstance();
+        calendario.setTime(MXServer.getMXServer().getDate());
+        calendario.add(Calendar.MONTH, +hmetrialterm)
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Set firstBillDate to: "+str(calendario.getTime()))
+        pluspBillSchedule.setValue("FIRSTBILLDATE",calendario.getTime(),MboConstants.NOVALIDATION)
+    elif comptrial=="D":
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Package is Demo")
+        if revisionnum>0:
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Revision is upper than 0")            
+            status=["ACTIVE","PENDING","SUSPENDED","AWTNGPAY","AWTNGRENEW","PROVPENDING","DAQPENDING"]
+            existingPluspBillSchedule=getBillSchedule(agreement,status,vin,None,itemnum,revisionnum-1,None,True)
+            if existingPluspBillSchedule is not None: 
+                ctx.error('configure','BlankMsg',['You cannot subscribe a Demo Package twice.'])
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: No duplicated Demo subscription found")
+        if autorenew ==True:
+            ctx.error('configure','BlankMsg',['You cannot set to Auto-Renew to a Demo Package'])
+        if asset.getString("STATUS")!="DEMO":
+            ctx.error('configure','BlankMsg',['You cannot subscribe a DEMO package for a non DEMO vehicle'])
+        changeBillScheduleStatus(pluspBillSchedule,"PROVPENDING","newSubscription","system")
+        pluspBillSchedule.setValue("STATUSTOCREATEBB","PAID")
+        pluspBSItemList.setValue("HMEAUTORENEW",False)
+    elif comptrial=="F":
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Package is Free")
+        if revisionnum>0:
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Revision is upper than 0")            
+            status=["ACTIVE","PENDING","SUSPENDED","AWTNGPAY","AWTNGRENEW","PROVPENDING","DAQPENDING"]
+            existingPluspBillSchedule=getBillSchedule(agreement,status,vin,None,itemnum,revisionnum-1,None,True)
+            if existingPluspBillSchedule is not None: 
+                ctx.error('configure','BlankMsg',['You cannot subscribe a Free Package twice.'])
+            Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: No duplicated Free subscription found")
+        if autorenew ==True:
+            ctx.error('configure','BlankMsg',['You cannot set to Auto-Renew to a Free Package'])            
+        changeBillScheduleStatus(pluspBillSchedule,"PROVPENDING","newSubscription","system")
+        pluspBillSchedule.setValue("STATUSTOCREATEBB","PAID")
+        pluspBSItemList.setValue("HMEAUTORENEW",False)
+    elif comptrial=="P":
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Package is Paid") 
+        if revisionnum>0:
+            if isItemStruct==False:
+                existingPlupspBillSchedule=getLastActiveSubscription(agreement,vin,itemnum);
+            else:
+                existingPlupspBillSchedule=getLastActiveSubscriptionPG(agreement,vin,itemstructMbo);                
+            if existingPlupspBillSchedule is not None:                                                      
+                Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Last pluspBillSchedule found ="+str(existingPlupspBillSchedule.getString("SCHEDULE"))) 
+                lastEndDate=existingPlupspBillSchedule.getDate("HMEENDDATE");
+                Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: lastEndDate ="+str(lastEndDate))                           
+                cal.setTime(lastEndDate);
+                cal.add(Calendar.DAY_OF_MONTH, +1);
+                Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: New First Bill Date ="+str(cal.getTime()))
+                pluspBillSchedule.setValue("FIRSTBILLDATE",cal.getTime(),MboConstants.NOVALIDATION)    
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: First Bill Date ="+str(pluspBillSchedule.getDate("FIRSTBILLDATE")))
+    firstBillDate=pluspBillSchedule.getDate("FIRSTBILLDATE")
+    cal.setTime(firstBillDate);  
+    unitToCalculateEndDate=pluspBillSchedule_interval*pluspBillSchedule_term;
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: unitToCalculateEndDate ="+str(unitToCalculateEndDate))
+    period = pluspBillSchedule.getString("PERIOD");
+    if period=="ONEOFF":
+        cal.add(Calendar.MONTH, +unitToCalculateEndDate);
+    elif period=="MONTHLY":
+        cal.add(Calendar.MONTH, +unitToCalculateEndDate);
+    elif period=="WEEK_OF_YEAR":
+        cal.add(Calendar.WEEK_OF_YEAR, +unitToCalculateEndDate);
+    elif period=="DAILY":
+        cal.add(Calendar.DAY_OF_YEAR, +unitToCalculateEndDate);
+    pluspBillSchedule.setValue("HMEENDDATE",cal.getTime())
+    pluspBSItemList.setValue("HMEENDDATE",cal.getTime())
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Setting Grace days...")
+    cal.setTime(MXServer.getMXServer().getDate());    
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: getting property HMEGRACEDAYS")
+    propvalue=mbo.getMboSet("$maxpropvalue","MAXPROPVALUE"," propname='HMEGRACEDAYS'").moveFirst().getInt("PROPVALUE")    
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: property HMEGRACEDAYS = "+str(propvalue))
+    cal.add(Calendar.DAY_OF_MONTH, +propvalue);
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Setting HMEGRACEDAYS field to = "+str(cal.getTime())) 
+    pluspBillSchedule.setValue("HMEGRACEENDDATE",cal.getTime())
+    if comptrial=="P":
+        nextbillpropvalue=mbo.getMboSet("$maxnextbillpropvalue","MAXPROPVALUE"," propname='HMENEXTBILLDAYS'").moveFirst().getInt("PROPVALUE")    
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: property HMENEXTBILLDAYS = "+str(nextbillpropvalue))
+        endDateSet = pluspBillSchedule.getDate("HMEENDDATE")
+        cal.setTime(endDateSet);
+        cal.add(Calendar.DAY_OF_MONTH, -nextbillpropvalue);
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Setting HMENEXTBILLDATE field to = "+str(cal.getTime())) 
+        pluspBillSchedule.setValue("HMENEXTBILLDATE",cal.getTime(),11L)
+        Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: Update auto-renewed Flag for the existing pluspbsitemlist that is set for renew")
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: pluspBSItemList package: "+pluspBSItemList.getString("ITEMNUM")+" revisionnum: "+pluspBSItemList.getString("REVISIONNUM"))
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: End!! Total number of subscriptions "+str(pluspbillscheduleSet.count())) 
+    Log("INFO","OSIN.HMEAGREEMENTS.newSubscription: End")
+    return pluspBillSchedule   
+
+def updateAutoRenewedFlag(ctx,vin,itemnum,agreement,orgid,revisionnum):
+    Log("INFO","OSIN.HMEAGREEMENTS.updateAutoRenewedFlag: Start")
+    flag = False
+    pluspbillscheduleSetToRenew = agreement.getMboSet("$pluspBillSchedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS = 'ACTIVE' and exists (select 1 from HMEAUTORENEW where PLUSPBILLSCHEDULE.schedule=HMEAUTORENEW.schedule and HMEAUTORENEW.agreement=PLUSPBILLSCHEDULE.agreement and PLUSPBILLSCHEDULE.revisionnum=HMEAUTORENEW.revisionnum and pluspbillschedule.schedule=hmeautorenew.schedule) and HMESERIALNUM ='"+vin+"' and exists(select 1 from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum='"+itemnum+"' and HMEAUTORENEW=1 and pluspbillschedule.schedule=pluspbsitemlist.schedule) and agreement='"+agreement.getString("AGREEMENT")+"' and orgid='"+orgid+"' and revisionnum='"+str(revisionnum)+"'")
+    if pluspbillscheduleSetToRenew is not None and pluspbillscheduleSetToRenew.isEmpty()==False:
+        ctx.error('configure','BlankMsg',["here i am"])
+        pluspbillscheduleToRenew = pluspbillscheduleSetToRenew.moveFirst()
+        pluspbsitemlistToRenew = getPluspBSItemList(pluspbillscheduleToRenew)
+        if pluspbsitemlistToRenew.getMboValue("HMEAUTORENEWED").isNull() == False:
+            pluspbsitemlistToRenew.setValue("HMEAUTORENEWED",True)
+            flag = True
+    Log("INFO","OSIN.HMEAGREEMENTS.updateAutoRenewedFlag: renewedflag: " + str(flag))
+    Log("INFO","OSIN.HMEAGREEMENTS.updateAutoRenewedFlag: End")
+
+def terminate(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.terminate: terminate Start")
+    try:
+        mbo=ctx.getMbo()
+        struc = ctx.getData()
+        agreement=mbo
+        pluspbillscheduleSet = agreement.getMboSet("PLUSPBILLSCHEDULE");
+        pluspbillscheduleSet.setWhere("HMEBILLSTATUS in ('AWTNGPAY','AWTNGRENEW','PROVPENDING','DAQPENDING','ACTIVE','PENDING','SUSPENDED')") 
+        Log("INFO","OSIN.HMEAGREEMENTS.terminate: pluspbillscheduleSet ("+str(pluspbillscheduleSet.count())+") Complete Where: "+pluspbillscheduleSet.getCompleteWhere())
+        if pluspbillscheduleSet is not None and pluspbillscheduleSet.isEmpty()==False:
+            pluspbillschedule=pluspbillscheduleSet.moveFirst()
+            while pluspbillschedule is not None:
+                Log("INFO","Canceling Shedule: "+pluspbillschedule.getString("SCHEDULE")+" of agreement: "+pluspbillschedule.getString("AGREEMENT"))
+                deEnrol(pluspbillschedule.getString("HMESERIALNUM"),agreement,True,"0")
+                pluspbillschedule=pluspbillscheduleSet.moveNext();  
+            pluspbillscheduleSet.save();       
+        assetUserCustSet=agreement.getMboSet("$assetusercust","ASSETUSERCUST","personid like '"+agreement.getString("customer")+"'")
+        Log("INFO","OSIN.HMEAGREEMENTS.terminate: assetUserCustSet ("+str(assetUserCustSet.count())+") Complete Where: "+assetUserCustSet.getCompleteWhere())
+        if assetUserCustSet is not None and assetUserCustSet.isEmpty()==False:
+            assetUserCust=assetUserCustSet.moveFirst();
+            while assetUserCust is not None:
+                if assetUserCust.getBoolean("ISPRIMARY"):
+                    deEnrol(assetUserCust.getString("ASSET.SERIALNUM"),agreement,True,"0")
+                else:
+                    assetUserCust.delete();
+                assetUserCust=assetUserCustSet.moveNext();
+            assetUserCustSet.save();
+        Log("INFO","OSIN.HMEAGREEMENTS.terminate: Deleted!")
+        personSet=agreement.getMboSet("PLUSPCUSTOMER").moveFirst().getMboSet("PERSON")
+        personSet.setWhere("STATUS!='INACTIVE'")
+        personSet.reset();
+        Log("INFO","OSIN.HMEAGREEMENTS.terminate: personSet ("+str(personSet.count())+") Complete Where: "+personSet.getCompleteWhere())
+        if personSet is not None and personSet.isEmpty()==False:
+            person=personSet.moveFirst();
+            person.changeStatus("INACTIVE", MXServer.getMXServer().getDate(), "Terminate Subscription (HMEAGREEMENTS script)",2L);
+            personSet.save()
+            Log("INFO","OSIN.HMEAGREEMENTS.terminate: Status changed to INACTIVE for person: "+person.getString("PERSONID")+"")
+        if mbo.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE") != "" and mbo.getString("PLUSPCUSTOMER.PERSON.LANGUAGE") != "":           
+            commtemplate="006-E-"+mbo.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE")+"-"+mbo.getString("PLUSPCUSTOMER.PERSON.LANGUAGE")
+            Log("INFO","OSIN.HMEAGREEMENTS.terminate: agreement: Sending communitation to "+mbo.getString("PLUSPCUSTOMER.PERSON.PERSONID")+" through commtemplate "+commtemplate)
+            sendMessage(agreement,commtemplate)            
+        else:
+            Log("INFO","OSIN.HMEAGREEMENTS.terminate: Cannot send communication because Language or LocationSite is not defined for the Customer(Person)")  
+    except:
+        msg=[str(sys.exc_info()[1])]
+        ctx.error('configure','BlankMsg',msg);           
+    Log("INFO","OSIN.HMEAGREEMENTS.terminate: terminate End")
+
+def deleteUser(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.deleteUser: deleteUser Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    agreement=mbo
+    terminate(ctx)
+    personSet=agreement.getMboSet("PLUSPCUSTOMER").moveFirst().getMboSet("PERSON")
+    if personSet is not None and personSet.isEmpty()==False:
+        person=personSet.moveFirst();
+        Log("INFO","OSIN.HMEAGREEMENTS.deleteUser: Set values null to person: "+person.getString("PERSONID")+"")
+        person=personSet.moveFirst();
+        person.setValueNull("FIRSTNAME")
+        person.setValueNull("LASTNAME")
+        person.getMboSet("PHONE").deleteAll(11L);
+        person.getMboSet("EMAIL").deleteAll(11L);
+        person.setValueNull("ADDRESSLINE1")
+        person.setValueNull("CITY")
+        person.setValueNull("STATEPROVINCE")
+        person.setValueNull("POSTALCODE")
+        person.setValueNull("COUNTRY")
+        person.setValueNull("PRIMARYSMS")
+        person.setValue("HMENOTIFICATION",False)
+        personSet.save()
+    Log("INFO","OSIN.HMEAGREEMENTS.deleteUser: deleteUser End")
+
+def dispose(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.dispose: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    if struc.isCurrentDataNull("vin")==True:
+        ctx.error('configure','BlankMsg',['vin cannot be null'])
+    vin=struc.getCurrentData("vin")
+    agreement=mbo    
+    deEnrol(vin,agreement,True,"PURGE")
+    asset=getAssetBySerialnum(vin,agreement);            
+    asset.changeStatus("DECOMMISSIONED", MXServer.getMXServer().getDate(), "Dispose vehicle (HMEAGREEMENTS script)",2L);
+    Log("INFO","OSIN.HMEAGREEMENTS.dispose: End")
+
+def activateSubscription(ctx,pluspbillschedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Start")
+    paymentMeanBrand=None;
+    authorisationId=None;
+    transactionReference = struc.getCurrentData("transactionReference")
+    responseCode = struc.getCurrentData("responseCode")
+    if struc.isCurrentDataNull("paymentMeanBrand")==False:
+        paymentMeanBrand = struc.getCurrentData("paymentMeanBrand")
+    if struc.isCurrentDataNull("authorisationId")==False:
+        authorisationId = struc.getCurrentData("authorisationId")
+    asset=getAsset(pluspbillschedule);
+    assetForCP=getAsset(pluspbillschedule)
+    item=getPackage(pluspbillschedule);
+    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Turn ON features of package the "+item.getString("ITEMNUM")+" for asset "+asset.getString("ASSETNUM"))
+    turnONPackage(asset,item)
+    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Setting bill batch to paid...")
+    pluspBillBatchSet=pluspbillschedule.getMboSet("PLUSPBILLBATCH");
+    comptrial=item.getString("HMECOMPTRIAL");
+    if comptrial=="T" or comptrial=="P":
+        Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: The package is Trial or Paid")
+        if pluspBillBatchSet.isEmpty()==False:
+            pluspBillBatch=pluspBillBatchSet.moveFirst();
+            Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Bill batch found: "+pluspBillBatch.getString("BILLBATCHNUM"))
+            Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Recording payment...")
+            pluspBillPMTSet=pluspBillBatch.getMboSet("PLUSPBILLPMT")
+            pluspBillPMT=pluspBillPMTSet.add();
+            pluspBillPMT.setValue("PMTREF",transactionReference,2L)
+            pluspBillPMT.setValue("PAIDINFULL",True,2L)
+            pluspBillPMT.setValue("AMTPAID",getPluspBSItemList(pluspbillschedule).getMboValue("UNITPRICE").getCurrentValue(),2L)
+            pluspBillPMT.setValue("REMARKS",responseCode,2L)
+            if authorisationId is not None:
+                pluspBillPMT.setValue("HMEAUTHID",authorisationId,2L)
+            if paymentMeanBrand is not None:
+                pluspBillPMT.setValue("PMTMETHOD",paymentMeanBrand,2L)
+            else:
+                pluspBillPMT.setValue("PMTMETHOD","-",2L)
+            pluspbillschedulenewSet = pluspBillBatch.getMboSet("PLUSPBILLSCHEDULE")
+            if pluspbillschedulenewSet.isEmpty()==False:
+                newpluspbillschedule=pluspbillschedulenewSet.moveFirst();
+                Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Set status to ACTIVE for schedule: "+newpluspbillschedule.getString("SCHEDULE"))
+                changeBillScheduleStatus(newpluspbillschedule,"ACTIVE","activateSubscription","system")
+                Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Bill schedule "+newpluspbillschedule.getString("SCHEDULE")+" is ACTIVE")            
+            itemstructMbo=getItemStructLine(item.getString("ITEMNUM"),item.getString("itemsetid"),pluspbillschedule.getString("HMESERIALNUM"));
+            if itemstructMbo is not None:
+                Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: This package belongs to an itemstruct!")
+                if getLastActiveSubscriptionPG(ctx.getMbo(),asset.getString("serialnum"),itemstructMbo) is not None:
+                    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: A previous Bill Schedule (sequence) already exists");
+                    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Set status to PENDING for schedule: "+newpluspbillschedule.getString("SCHEDULE"));
+                    changeBillScheduleStatus(newpluspbillschedule,"PENDING","activateSubscription","system")
+            elif getLastActiveSubscription(ctx.getMbo(),asset.getString("serialnum"),item.getString("ITEMNUM")) != None:
+                Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: A previous Bill Schedule already exists")
+                Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Set status to PENDING for schedule: "+newpluspbillschedule.getString("SCHEDULE")) 
+                changeBillScheduleStatus(newpluspbillschedule,"PENDING","activateSubscription","system")
+        else:
+            ctx.error('configure','BlankMsg',['No bill batch found for the bill schedule'+pluspbillschedule.getString("SCHEDULE") + ' agreement:'+pluspbillschedule.getOwner().getString("AGREEMENT")])
+    if comptrial=="C" or comptrial=="CP" or comptrial=="D" or comptrial=="F":
+        Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: The package is Complementary")
+        if pluspBillBatchSet.isEmpty()==False:
+            pluspBillBatch=pluspBillBatchSet.moveFirst();
+            pluspbillschedulenewSet = pluspBillBatch.getMboSet("PLUSPBILLSCHEDULE")
+            if pluspbillschedulenewSet.isEmpty()==False:
+                newpluspbillschedule=pluspbillschedulenewSet.moveFirst();
+                changeBillScheduleStatus(newpluspbillschedule,"ACTIVE","activateSubscription","system") 
+                ownerChangedFlag(assetForCP)
+    if pluspBillBatch.getString("STATUS") != "PAID":
+        pluspBillBatch.changeStatus("PAID",MXServer.getMXServer().getDate(), "Activate Subscription integration");
+        Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: Bill batch is PAID!")
+    Log("INFO","OSIN.HMEAGREEMENTS.activateSubscription: End") 
+
+def failedSubscription(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.failedSubscription: Start")     
+    pluspBillBatchSet=pluspBillSchedule.getMboSet("PLUSPBILLBATCH")    
+    pluspBillBatch=pluspBillBatchSet.getMbo(0);
+    if pluspBillBatch is None:
+        ctx.error('configure','BlankMsg',['No bill Batch found...'])        
+    samePluspbillscheduleSet=pluspBillBatch.getMboSet("PLUSPBILLSCHEDULE") #due "changed by another user issue"     
+    samePluspbillschedule=samePluspbillscheduleSet.getMbo(0)        
+    if samePluspbillschedule.getString("HMETRANSID") != samePluspbillschedule.getString("HMEORIGTRANSID"):
+        changeBillScheduleStatus(samePluspbillschedule,"RENEWFAILED","failedSubscription","system");
+    else:
+        changeBillScheduleStatus(samePluspbillschedule,"PYMNTFAILED","failedSubscription","system");
+    pluspBillBatch.changeStatus("PYMNTFAILED",MXServer.getMXServer().getDate(), "Payment Failed",2L);
+    Log("INFO","OSIN.HMEAGREEMENTS.failedSubscription: End")
+    return samePluspbillschedule
+
+def refundedPayment(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.refundedPayment: Start")
+    changeBillScheduleStatus(pluspBillSchedule,"REFUNDED","refundedPayment","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.refundedPayment: End")
+
+def refundedFailed(pluspBillSchedule):
+    Log("INFO","OSIN.HMEAGREEMENTS.refundedPayment: Start")
+    changeBillScheduleStatus(pluspBillSchedule,"REFUNDFAILED","refundedFailed","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.refundedPayment: End")
+
+def incompleteSubscription(pluspbillschedule,memo,who):
+    Log("INFO","OSIN.HMEAGREEMENTS.incompleteSubscription: Start")
+    billscheduleSet=None;
+    itemstructMboSet=None;
+    type = getType(pluspbillschedule);
+    if type in ["P","T"]:
+        if pluspbillschedule.getString("HMEBILLSTATUS") in ["AWTNGPAY","CANCELLED","REFUNDED","EXPIRED","PYMNTFAILED","RENEWFAILED"]:
+            changeBillScheduleStatus(pluspbillschedule,"INCOMPLETE",memo,who)  
+        elif pluspbillschedule.getString("HMEBILLSTATUS") in ["ACTIVE","PROVPENDING","DAQPENDING","PENDING"]:
+            changeBillScheduleStatus(pluspbillschedule,"AWTNGREFUND",memo,who)        
+    elif type in ["C","CP","D","F"]:
+        try:
+            itemMbo=getPluspBSItemList(pluspbillschedule);   
+            itemstructMboSet=mbo.getMboSet("$itemStruct","ITEMSTRUCT"," parent in (select parent from itemstruct where parent is not null and itemnum='"+itemMbo.getString("itemnum")+"' and itemsetid='"+itemMbo.getString("itemsetid")+"' and parent=itemid and exists (select 1 from item where itemnum=itemstruct.parent and commodity='PACKGRP' and itemsetid=itemstruct.itemsetid)) and itemsetid='"+itemMbo.getString("itemsetid")+"' and parent=itemid and exists (select 1 from item where itemnum=itemstruct.parent and commodity='PACKGRP' and itemsetid=itemstruct.itemsetid) and itemnum!='"+itemMbo.getString("itemnum")+"' and hmesequence>"+str(itemMbo.getInt("HMESEQUENCE"))+"")
+            itemstructMboSet.setOrderBy("hmesequence desc")            
+            if itemstructMboSet.isEmpty()==False:
+                itemstructMbo=itemstructMboSet.moveFirst();
+                while itemstructMbo is not None:
+                    billscheduleSet=pluspbillschedule.getMboSet("$pluspBillSchedule","PLUSPBILLSCHEDULE","HMEBILLSTATUS != 'INCOMPLETE' and HMESERIALNUM='"+pluspbillschedule.getString("HMESERIALNUM")+"' and schedule in (select schedule from PLUSPBSITEMLIST where agreement=PLUSPBILLSCHEDULE.agreement and orgid=PLUSPBILLSCHEDULE.orgid and revisionnum=PLUSPBILLSCHEDULE.revisionnum and itemnum='"+itemstructMbo.getString("ITEMNUM")+"') and agreement='"+pluspbillschedule.getString("AGREEMENT")+"' and orgid='"+pluspbillschedule.getString("ORGID")+"' and revisionnum='"+pluspbillschedule.getString("revisionnum")+"'");
+                    if billscheduleSet.isEmpty()==False:
+                        context.error('configure','BlankMsg',['You cannot incomplete a complimentary subscription while paid version of this package is not incompleted'])
+                        break;
+                    billscheduleSet.reset();
+                    itemstructMbo=itemstructMboSet.moveNext();
+        finally:
+            clearAndCloseMboSet(itemstructMboSet);
+            clearAndCloseMboSet(billscheduleSet);            
+        changeBillScheduleStatus(pluspbillschedule,"INCOMPLETE",memo,who) 
+    Log("INFO","OSIN.HMEAGREEMENTS.incompleteSubscription: End")
+    
+def setUpdateSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setUpdateSubscription: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    pluspBillSchedule=None
+    pluspBSItemList =None
+    hmetransid=None
+    hmemerchantid=None
+    hmeorigtransid=None
+    autorenew=False    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("pricebook")==True:
+        ctx.error('configure','BlankMsg',['pricebook cannot be null'])
+    if struc.isCurrentDataNull("recurringprice")==True:
+        ctx.error('configure','BlankMsg',['recurringprice cannot be null'])        
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    priceBook = struc.getCurrentData("pricebook")
+    recurringPrice=struc.getCurrentDataAsDouble("recurringprice")    
+    if struc.isCurrentDataNull("hmetransid")==False:
+        hmetransid=struc.getCurrentData("hmetransid")        
+    if struc.isCurrentDataNull("hmemerchantid")==False:
+        hmemerchantid=struc.getCurrentData("hmemerchantid")
+    if struc.isCurrentDataNull("hmeorigtransid")==False:
+        hmeorigtransid=struc.getCurrentData("hmeorigtransid")
+    if struc.isCurrentDataNull("autorenew") ==False :
+        autorenew=struc.getCurrentDataAsBoolean("autorenew") 
+    agreementSet = mbo.getMboSet("PLUSPAGMTREVHIST")
+    agreementSet.setFlag(MboConstants.DISCARDABLE, True);
+    if agreementSet is not None:
+        agreement=mbo.reviseAgreement("setUpdateSubscription OSLC Service integration","");
+        agreementTXT=agreement.getString("AGREEMENT")
+        pluspBillSchedule=newSubscription(ctx,agreement,hmeserialnum,itemnum,autorenew,recurringPrice,priceBook)
+        if hmemerchantid is not None:
+            pluspBillSchedule.setValue("HMEMERCHANTID",hmemerchantid,2L)
+        if hmeorigtransid is not None:
+            pluspBillSchedule.setValue("HMEORIGTRANSID",hmeorigtransid,2L)
+        if hmetransid is not None:
+            pluspBillSchedule.setValue("HMETRANSID",hmetransid,2L)
+            if pluspBillSchedule.isNull("HMEORIGTRANSID") ==True or pluspBillSchedule.getString("HMEORIGTRANSID")=="":
+                pluspBillSchedule.setValue("HMEORIGTRANSID",hmetransid,2L)
+        if pluspBillSchedule.getString("HMETRANSID") != pluspBillSchedule.getString("HMEORIGTRANSID"):
+            changeBillScheduleStatus(pluspBillSchedule,"AWTNGRENEW","setUpdateSubscription","system");        
+        agreement.changeStatus("APPR", MXServer.getMXServer().getDate(), "setUpdateSubscription OSLC Service integration");
+        plusPBillGeneration(ctx,agreement,pluspBillSchedule)
+    Log("INFO","OSIN.HMEAGREEMENTS.setUpdateSubscription: End")
+
+def setDeEnrol(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setDeEnrol: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    if struc.isCurrentDataNull("vin")==True:
+        ctx.error('configure','BlankMsg',['vin cannot be null'])
+    vin=struc.getCurrentData("vin")   
+    Log("INFO","Revise Agreement "+mbo.getString("AGREEMENT"))
+    agreement=mbo;
+    deEnrol(vin,agreement,True,"0");
+    Log("INFO","OSIN.HMEAGREEMENTS.setDeEnrol: End")
+
+def setDeEnrolWithSimActive(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setDeEnrolWithSimActive: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    if struc.isCurrentDataNull("vin")==True:
+        ctx.error('configure','BlankMsg',['vin cannot be null'])
+    vin=struc.getCurrentData("vin")   
+    Log("INFO","Revise Agreement "+mbo.getString("AGREEMENT"))
+    agreement=mbo;
+    deEnrol(vin,agreement,False,None);
+    Log("INFO","OSIN.HMEAGREEMENTS.setDeEnrolWithSimActive: End")
+
+def setCancelSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setCancelSubscription: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum=struc.getCurrentData("itemnum")
+    hmeserialnum=struc.getCurrentData("hmeserialnum")
+    linenumber=struc.getCurrentData("linenumber")
+    agreement=mbo    
+    pluspbillscheduleSet = agreement.getMboSet("PLUSPBILLSCHEDULE");
+    pluspbillscheduleSet.setWhere(" exists(select 1 from pluspbsitemlist where itemnum='"+itemnum+"' and agreement=pluspbillschedule.agreement and revisionnum=pluspbillschedule.revisionnum and orgid=pluspbillschedule.orgid and linenumber='" + linenumber + "' and pluspbillschedule.schedule=pluspbsitemlist.schedule) and hmebillstatus in ('PROVPENDING','DAQPENDING','AWTNGPAY','AWTNGRENEW','ACTIVE','PENDING','SUSPENDED') and hmeserialnum ='"+hmeserialnum+"'")
+    if pluspbillscheduleSet is not None and pluspbillscheduleSet.isEmpty()==False:
+        pluspbillschedule=pluspbillscheduleSet.moveFirst()
+        while pluspbillschedule is not None:            
+            cancelSubscription(pluspbillschedule);
+            renewedSubs=getRenewedSubscription(pluspbillschedule);
+            if renewedSubs is not None:
+                changeBillScheduleStatus(renewedSubs,"AWTNGREFUND","setCancelSubscription","system")
+            if pluspbillschedule.getString("PLUSPAGREEMENT.PLUSPCUSTOMER.PERSON.LOCATIONSITE") != "" and pluspbillschedule.getString("PLUSPAGREEMENT.PLUSPCUSTOMER.PERSON.LANGUAGE") != "":
+                commtemplate="002-E-"+pluspbillschedule.getString("PLUSPAGREEMENT.PLUSPCUSTOMER.PERSON.LOCATIONSITE")+"-"+pluspbillschedule.getString("PLUSPAGREEMENT.PLUSPCUSTOMER.PERSON.LANGUAGE")
+                sendMessage(pluspbillschedule,commtemplate)
+            pluspbillschedule=pluspbillscheduleSet.moveNext();
+    else:
+        ctx.error('configure','BlankMsg',['No cancelable bill schedule found for this itemnum/hmeserialnum/linenumber combination'])
+    Log("INFO","OSIN.HMEAGREEMENTS.setCancelSubscription: End")
+
+def setProvSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setProvSubscription: Start")    
+    mbo=ctx.getMbo()
+    struc = ctx.getData()    
+    agreement=mbo    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid") 
+    linenumber=struc.getCurrentData("linenumber") 
+    status=["AWTNGPAY","AWTNGRENEW"]   
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);    
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in AWTNGPAY/AWTNGRENEW found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    changeBillScheduleStatus(pluspBillSchedule,"PROVPENDING","setProvSubscription","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.setProvSubscription: End") 
+
+def setActivateSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setActivateSubscription: Start")
+    commtemplate=None;
+    mbo=ctx.getMbo()
+    struc = ctx.getData()    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("transactionreference")==True:
+        ctx.error('configure','BlankMsg',['transactionreference cannot be null'])
+    if struc.isCurrentDataNull("responsecode")==True:
+        ctx.error('configure','BlankMsg',['responsecode cannot be null']) 
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null']) 
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid") 
+    linenumber=struc.getCurrentData("linenumber") 
+    agreement=mbo
+    status=["PROVPENDING","DAQPENDING"]    
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);    
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in PROVPENDING/DAQPENDING found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    activateSubscription(ctx,pluspBillSchedule);    
+    LocationSite=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE");
+    Language=agreement.getString("PLUSPCUSTOMER.PERSON.LANGUAGE");
+    if LocationSite != "" and Language != "":
+        Log("INFO","OSIN.HMEAGREEMENTS.setActivateSubscription: Sending email...")
+        comptrial=getType(pluspBillSchedule);
+        packageCore=pluspBillSchedule.getString("HMEPACKAGECORE")
+        Log("INFO","OSIN.HMEAGREEMENTS.setActivateSubscription: Subscription type: "+str(comptrial))
+        if comptrial=="C" and packageCore!="HPLUS":
+            commtemplate="035-E-"+LocationSite+"-"+Language
+        elif comptrial=="CP" and packageCore!="HPLUS":
+            commtemplate="035-E-"+LocationSite+"-"+Language
+        elif comptrial=="C" and packageCore=="HPLUS":
+            commtemplate="050-E-"+LocationSite+"-"+Language
+        elif comptrial=="CP" and packageCore=="HPLUS":
+            commtemplate="050-E-"+LocationSite+"-"+Language
+        elif comptrial=="T":
+            commtemplate="036-E-"+LocationSite+"-"+Language
+        elif comptrial=="P" and packageCore!="HPLUS":
+            commtemplate="034-E-"+LocationSite+"-"+Language
+        elif comptrial=="P" and packageCore=="HPLUS":
+            commtemplate="049-E-"+LocationSite+"-"+Language
+        elif comptrial=="F":
+            commtemplate="042-E-"+LocationSite+"-"+Language        
+        if getPreviousPluspBillSchedule(pluspBillSchedule)!= None and getAutorenewFlag(pluspBillSchedule)==True:
+            if packageCore=="HPLUS":
+                commtemplate="047-E-"+LocationSite+"-"+Language
+            else:
+                commtemplate="003-E-"+LocationSite+"-"+Language            
+        if commtemplate is not None:
+            Log("INFO","OSIN.HMEAGREEMENTS.setActivateSubscription: agreement: Sending communitation to "+agreement.getString("PLUSPCUSTOMER.PERSON.PERSONID")+" through commtemplate "+commtemplate)
+            sendMessage(pluspBillSchedule,commtemplate)
+    Log("INFO","OSIN.HMEAGREEMENTS.setActivateSubscription: End") 
+
+def setfailedSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setfailedSubscription: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid") 
+    linenumber=struc.getCurrentData("linenumber") 
+    agreement=mbo;
+    status=["AWTNGPAY","AWTNGRENEW"];    
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in AWTNGPAY/AWTNGRENEW found for this itemnum/hmeserialnum/hmetransid/linenumber'])     
+    pluspBillSchedule=failedSubscription(pluspBillSchedule);
+    if pluspBillSchedule.getString("HMEBILLSTATUS")=='RENEWFAILED':
+        LocationSite=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE");
+        Language=agreement.getString("PLUSPCUSTOMER.PERSON.LANGUAGE");
+        if LocationSite != "" and Language != "":
+            commtemplate="043-E-"+LocationSite+"-"+Language
+            sendMessage(pluspBillSchedule,commtemplate)    
+    Log("INFO","OSIN.HMEAGREEMENTS.setfailedSubscription: End")
+
+def setRefundedPayment(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setRefundedPayment: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid")
+    linenumber=struc.getCurrentData("linenumber")
+    agreement=mbo;
+    status=["AWTNGREFUND"]
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in AWTNGREFUND found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    refundedPayment(pluspBillSchedule);    
+    LocationSite=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE");
+    Language=agreement.getString("PLUSPCUSTOMER.PERSON.LANGUAGE");
+    if LocationSite != "" and Language != "":
+        commtemplate="030-E-"+LocationSite+"-"+Language        
+        sendMessage(pluspBillSchedule,commtemplate)    
+    Log("INFO","OSIN.HMEAGREEMENTS.setRefundedPayment: End")
+
+def setRefundedFailed(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setRefundedFailed: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid") 
+    linenumber=struc.getCurrentData("linenumber") 
+    agreement=mbo;
+    status=["AWTNGREFUND"]
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in AWTNGREFUND found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    refundedFailed(pluspBillSchedule);
+    LocationSite=agreement.getString("PLUSPCUSTOMER.PERSON.LOCATIONSITE");
+    Language=agreement.getString("PLUSPCUSTOMER.PERSON.LANGUAGE");
+    if LocationSite != "" and Language != "":
+        commtemplate="037-E-"+LocationSite+"-"+Language
+        sendMessage(pluspBillSchedule,commtemplate)
+    Log("INFO","OSIN.HMEAGREEMENTS.setRefundedFailed: End")
+
+def setAwaitingRefund(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setAwaitingRefund: Start")
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    hmemerchantid=None
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    if struc.isCurrentDataNull("hmemerchantid")==False:
+    hmemerchantid = struc.getCurrentData("hmemerchantid")
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid")
+    linenumber=struc.getCurrentData("linenumber")
+    agreement=mbo;
+    status=["AWTNGREFUND"]
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in AWTNGREFUND found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    pluspBillSchedule.setValue("HMETRANSID",hmetransid)
+    if hmemerchantid is not None:
+        pluspBillSchedule.setValue("HMEMERCHANTID",hmemerchantid)
+    Log("INFO","OSIN.HMEAGREEMENTS.setAwaitingRefund: End")
+
+def setIncompleteSubscription(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setIncompleteSubscription: Start")
+    global context;
+    context=ctx;
+    mbo=ctx.getMbo()
+    struc = ctx.getData()
+    transIdSet=None;
+    if struc.isCurrentDataNull("memo")==True:
+        ctx.error('configure','BlankMsg',['memo cannot be null'])
+    if struc.isCurrentDataNull("who")==True:
+        ctx.error('configure','BlankMsg',['who cannot be null'])
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    memo=struc.getCurrentData("memo")
+    who=struc.getCurrentData("who")
+    itemnum=struc.getCurrentData("itemnum")
+    hmeserialnum=struc.getCurrentData("hmeserialnum")
+    linenumber=struc.getCurrentData("linenumber")
+    agreement=mbo 
+    status=["PROVPENDING","DAQPENDING","AWTNGPAY","CANCELLED","REFUNDED","PYMNTFAILED"]
+    try:
+        pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,None,itemnum,None,linenumber,False);        
+        if pluspBillSchedule is None:
+            ctx.error('configure','BlankMsg',['No incompletable bill schedule found for this itemnum/hmeserialnum/linenumber combination'])
+        
+        subsStatus=pluspBillSchedule.getString("HMEBILLSTATUS") 
+        if subsStatus=='DAQPENDING' and pluspBillSchedule.getString("HMEPACKAGECORE")=="CC":
+            transIdSet=agreement.getMboSet("PLUSPBILLSCHEDULE")
+            transIdSet.setWhere("HMEPACKAGECORE in ('S&J','CC') and hmetransid='"+pluspBillSchedule.getString("HMETRANSID")+"' and hmeserialnum='"+pluspBillSchedule.getString("HMESERIALNUM")+"' and hmebillstatus not in ('INCOMPLETE','ACTIVE')")
+            if transIdSet.isEmpty()==False:
+                transId=transIdSet.moveFirst();
+                while transId is not None:
+                    incompleteSubscription(transId,memo,who)
+                    transId=transIdSet.moveNext();
+                transIdSet.save()
+        else:
+            incompleteSubscription(pluspBillSchedule,memo,who)
+    finally:
+        clearAndCloseMboSet(transIdSet)
+    Log("INFO","OSIN.HMEAGREEMENTS.setIncompleteSubscription: End")
+
+def setSubsDAQPending(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.setSubsDAQPending: Start")    
+    mbo=ctx.getMbo()
+    struc = ctx.getData()    
+    agreement=mbo    
+    if struc.isCurrentDataNull("itemnum")==True:
+        ctx.error('configure','BlankMsg',['itemnum cannot be null'])
+    if struc.isCurrentDataNull("hmeserialnum")==True:
+        ctx.error('configure','BlankMsg',['hmeserialnum cannot be null'])
+    if struc.isCurrentDataNull("hmetransid")==True:
+        ctx.error('configure','BlankMsg',['hmetransid cannot be null'])
+    if struc.isCurrentDataNull("linenumber")==True:
+        ctx.error('configure','BlankMsg',['linenumber cannot be null'])
+    itemnum = struc.getCurrentData("itemnum")
+    hmeserialnum = struc.getCurrentData("hmeserialnum")
+    hmetransid=struc.getCurrentData("hmetransid") 
+    linenumber=struc.getCurrentData("linenumber") 
+    status=["PROVPENDING"]   
+    pluspBillSchedule=getBillSchedule(agreement,status,hmeserialnum,hmetransid,itemnum,None,linenumber,False);    
+    if pluspBillSchedule is None:
+        ctx.error('configure','BlankMsg',['No bill schedule in PROVPENDING found for this itemnum/hmeserialnum/hmetransid/linenumber'])
+    changeBillScheduleStatus(pluspBillSchedule,"DAQPENDING","setSubsDAQPending","system")
+    Log("INFO","OSIN.HMEAGREEMENTS.setSubsDAQPending: End") 
+
+def beforeProcess(ctx):
+    Log("INFO","OSIN.HMEAGREEMENTS.beforeProcess: Start") 
+    struc = ctx.getData()  
+    personSet=None
+    try: 
+        customer=None;
+        if struc.isCurrentDataNull("personid")==False:
+            customer = struc.getCurrentData("personid")
+        else:
+            customer = struc.getCurrentData("customer")
+        server=MXServer.getMXServer()
+        personSet=server.getMboSet("PERSON",ctx.getUserInfo());
+        personSet.setQbeExactMatch(True);
+        personSet.setQbe("PLUSPCUSTVENDOR",customer);
+        if personSet is not None and personSet.isEmpty()==False:
+            person=personSet.moveFirst();
+            if person.isNull("LOCATIONSITE")==True:
+                ctx.error('configure','BlankMsg',['The Person Site is not defined. Specify first the person Site on Person Application'])
+            if person.isNull("LANGUAGE")==True:
+                ctx.error('configure','BlankMsg',['The Language is not defined. Specify first the Language on Person Application'])
+            struc.setCurrentData("orgid", person.getString("LOCATIONORG"));
+            struc.setCurrentData("siteid", person.getString("LOCATIONSITE")); 
+            if struc.getCurrentData("agreement") is not None:
+                struc.setCurrentDataNull("agreement");
+    finally:
+        if personSet is not None:
+            personSet.close();
+    Log("INFO","OSIN.HMEAGREEMENTS.beforeProcess: End") 
+
+def afterMboData(ctx):   
+    Log("INFO","OSIN.HMEAGREEMENTS.afterMboData: Start")
+    global struc, mbo
+    struc = ctx.getData()
+    mbo=ctx.getMbo()
+    pluspAGMTStatusSet=None;    
+    if struc.isCurrentDataNull("personid")==False:
+        customer = struc.getCurrentData("personid")
+    else:
+        customer = struc.getCurrentData("customer")
+    if mbo.getString("ORGID")!=struc.getCurrentData("orgid") or mbo.getString("CUSTOMER")!=customer:
+        Log("ERROR","OSIN.HMEAGREEMENTS.afterMboData: customer sent: "+str(customer)+" customer from agreement:"+str(mbo.getString("CUSTOMER")))
+        ctx.error('pluspagree','CustAgreementNotMatch')
+    pluspAGMTStatusSet = mbo.getMboSet("$pluspAGMTStatus","PLUSPAGMTSTATUS","agreement ='"+mbo.getString("AGREEMENT")+"' and orgid='"+mbo.getString("ORGID")+"' and status in ('APPR','PNDREV')")
+    pluspAGMTStatusSet.setOrderBy("revisionnum desc")
+    pluspAGMTStatusSet.reset()
+    if pluspAGMTStatusSet.isEmpty()==False:
+        pluspAGMTStatus=pluspAGMTStatusSet.moveFirst();
+        if mbo.getInt("REVISIONNUM") < pluspAGMTStatus.getInt("REVISIONNUM"):
+            ctx.error('pluspagree','agreenotlatest')
+    if pluspAGMTStatusSet is not None:
+        pluspAGMTStatusSet.close();
+    action=struc.getCurrentData("action")
+    if action=="updateSubscription":
+        setUpdateSubscription(ctx);
+    elif action=="reviseSubscription":
+        setUpdateSubscription(ctx);
+    elif action=="setDeEnrol":
+        setDeEnrol(ctx);
+    elif action=="setDeEnrolWithSimActive":
+        setDeEnrolWithSimActive(ctx);
+    elif action=="setTCUReset":
+        setDeEnrol(ctx);
+    elif action=="terminate":
+        terminate(ctx);
+    elif action=="deleteUser":
+        deleteUser(ctx);
+    elif action=="setCancelSubscription":
+        setCancelSubscription(ctx);
+    elif action=="dispose":
+        dispose(ctx);
+    elif action=="activateSubscription":
+        setActivateSubscription(ctx);
+    elif action=="provSubscription":
+        setProvSubscription(ctx);
+    elif action=="failedSubscription":
+        setfailedSubscription(ctx);  
+    elif action=="refundedPayment":
+        setRefundedPayment(ctx);
+    elif action=="refundedFailed":
+        setRefundedFailed(ctx);
+    elif action=="awaitingRefund":
+        setAwaitingRefund(ctx);
+    elif action=="setResetPackages":
+        setIncompleteSubscription(ctx);
+    elif action=="setSubsDAQPending":
+        setSubsDAQPending(ctx);
+    else:
+        ctx.error('configure','BlankMsg',['Action not found...'])
+    Log("INFO","OSIN.HMEAGREEMENTS.afterMboData: End")
+
+Log("INFO", "HMEAGREEMENTS: ######################## END ########################")
